@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# Copyright (C) 2019 Matthew Marting
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# C++-comment standard input.
+#
+# C++-commenting standard input is done by C++-commenting each line of standard
+# input.  C++-commenting a line is usually done by prepending `// ' to the
+# line.  However, if the line is empty, then prepending `// ' to the line would
+# insert a trailing space.  Therefore, `//' is substituted for each empty line.
+# If a line ends with a backslash, then prepending `// ' to the line would also
+# comment the next line.  If the line is not the last line, then the next line
+# is already going to be commented.  However, if the line is the last line,
+# then the next line could be a line of code.  Therefore, if the last line ends
+# with a backslash, then an empty line is appended.
+cxxcomment() {
+  sed --expression='s/^.\+$/\/\/ &/' --expression='s/^$/\/\//' --expression='$s/\\$/&\n/'
+}
+
+valid_relative_header_path_pattern=\
+'^([A-Za-z]([0-9A-Za-z]|_[A-Za-z])*/)*[A-Za-z]([0-9A-Za-z]|_[A-Za-z])*\.h$'
+
+# Check whether the relative header path is valid.
+#
+# A relative header path is relative to the root directory of a project, so a
+# relative header path must not contain the root directory `/', the current
+# directory `.', or the parent directory `..'.  A relative header path may
+# include zero or more directories.  The name of each directory and the name of
+# the header excluding an ASCII period and a C++ header file extension must
+# contain only ASCII numbers, ASCII upper-case letters, ASCII underscores, and
+# ASCII lower-case letters and must start with an ASCII letter.  Each
+# underscore must be followed by a letter.  The name of the header must end
+# with an ASCII period followed by a C++ header file extension.  The C++ header
+# file extensions are:
+#
+#  *  `.H',
+#  *  `.h',
+#  *  `.h++',
+#  *  `.hh',
+#  *  `.hpp', and
+#  *  `.hxx'.
+is_relative_header_path_valid() {
+  relative_header_path="$1"
+  [[ $relative_header_path =~ $valid_relative_header_path_pattern ]]
+}
+
+# Canonicalize a relative header path into a C++ macro name.
+#
+# Precondition: the relative header path is valid.
+#
+# An underscore is substituted for each character that is not an ASCII number,
+# an ASCII upper-case letter, an ASCII underscore, or an ASCII lower-case
+# letter.  Such characters include ASCII period `.' and ASCII forward slash
+# `/'.  All lower-case characters are transformed into upper-case characters.
+canonicalize_valid_relative_header_path() {
+  valid_relative_header_path="$1"
+  printf '%s\n' "$valid_relative_header_path" | sed 's/[^0-9A-Z_a-z]/_/g' | tr '[a-z]' '[A-Z]'
+}
+
+# Count the number of lines in a variable.
+count_lines() {
+  s="$1"
+  printf '%s\n' "$s" | wc --lines
+}
+
+format_proximal_number_in_units() {
+  x="$1"
+  plural_unit_string="$2"
+  unit_string="$3"
+
+  (( x == 1 )) && {
+    printf '%s\n' "$unit_string"
+    return
+  }
+
+  printf '%d %s\n' "$x" "$plural_unit_string"
+}
+
+main() {
+  license_path="$1"
+  path="$2"
+
+  [[ -e $license_path ]] || {
+    printf >&2 \
+'%s: error: %s: No such file or directory\n' \
+      "$0" \
+      "$license_path"
+    exit 1
+  }
+
+  cxxcommented_license="$(cat -- "$license_path" | cxxcomment)"
+
+  while IFS= read -d '' -r header_path && read -d '' -r relative_header_path; do
+    is_relative_header_path_valid "$relative_header_path" || {
+      printf >&2 \
+'%s: Relative header path is not valid\n' \
+        "$relative_header_path"
+      continue
+    }
+
+    header_xinclude_guard_macro_name="$(canonicalize_valid_relative_header_path "$relative_header_path")"
+    lhand_side_head="$(printf \
+'%s\n'\
+'\n'\
+'#ifndef %s\n'\
+'#define %s\n' \
+      "$cxxcommented_license" \
+      "$header_xinclude_guard_macro_name" \
+      "$header_xinclude_guard_macro_name")"
+    lhand_side_tail="$(printf \
+'#endif // %s\n' \
+      "$header_xinclude_guard_macro_name")"
+
+    lhand_side_head_line_count="$(count_lines "$lhand_side_head")"
+    unset is_header_head_diff
+
+    header_head_diff="$(diff <(printf '%s\n' "$lhand_side_head") <(head --lines="$lhand_side_head_line_count" -- "$header_path"))" || {
+      is_header_head_diff=
+    }
+
+    lhand_side_tail_line_count="$(count_lines "$lhand_side_tail")"
+    unset is_header_tail_diff
+
+    header_tail_diff="$(diff <(printf '%s\n' "$lhand_side_tail") <(tail --lines="$lhand_side_tail_line_count" -- "$header_path"))" || {
+      is_header_tail_diff=
+    }
+
+    [[ -n ${is_header_head_diff+x} ]] && printf >&2 \
+'In first %s:\n'\
+'%s: error:\n'\
+'%s\n' \
+        "$(format_proximal_number_in_units "$lhand_side_head_line_count" 'lines' 'line')" \
+        "$relative_header_path" \
+        "$header_head_diff"
+
+    [[ -n ${is_header_tail_diff+x} ]] && printf >&2 \
+'In last %s:\n'\
+'%s: error:\n'\
+'%s\n' \
+        "$(format_proximal_number_in_units "$lhand_side_tail_line_count" 'lines' 'line')" \
+        "$relative_header_path" \
+        "$header_tail_diff"
+  done < <(find "$path" -name '*.h' -printf '%p\0%P\0')
+}
+
+main "$@"
